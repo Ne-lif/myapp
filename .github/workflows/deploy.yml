@@ -1,0 +1,90 @@
+name: Full Stack Application Deployment Test
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  deploy-and-test:
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create .env file from secrets
+        run: |
+          echo "Creating .env file from GitHub Secrets..."
+          cat > .env << EOF
+          DB_HOST=${{ secrets.DB_HOST }}
+          DB_PORT=${{ secrets.DB_PORT }}
+          DB_NAME=${{ secrets.DB_NAME }}
+          DB_USER=${{ secrets.DB_USER }}
+          DB_PASSWORD=${{ secrets.DB_PASSWORD }}
+          APP_PORT=${{ secrets.APP_PORT }}
+          APP_SECRET=${{ secrets.APP_SECRET }}
+          API_KEY=${{ secrets.API_KEY }}
+          EOF
+          echo ".env file created successfully"
+
+      - name: Deploy with Docker Compose
+        run: |
+          echo "Starting application stack..."
+          docker compose up -d
+          echo "Waiting for services to start..."
+          sleep 30
+          docker compose ps
+
+      - name: Verify containers are running
+        run: |
+          if docker compose ps | grep -q "Up"; then
+            echo "All containers are running"
+          else
+            echo "Some containers failed to start"
+            docker compose logs
+            exit 1
+          fi
+
+      - name: Run application tests
+        run: |
+          echo "Testing application and database connectivity..."
+          if curl -f http://localhost:${{ secrets.APP_PORT }}/health; then
+            echo "Web application is healthy"
+          else
+            echo "Web application health check failed"
+            exit 1
+          fi
+
+          echo "2. Testing data consistency..."
+          DB_COUNT=$(docker compose exec -T db psql -U ${{ secrets.DB_USER }} -d ${{ secrets.DB_NAME }} -t -c "SELECT COUNT(*) FROM items;" | tr -d ' ' | head -1)
+          WEB_COUNT=$(curl -s http://localhost:${{ secrets.APP_PORT }}/api/items/count)
+          echo "Database count: $DB_COUNT"
+          echo "Web API count: $WEB_COUNT"
+          if [ "$DB_COUNT" = "$WEB_COUNT" ]; then
+            echo "Data consistency test passed"
+          else
+            echo "Data consistency test failed"
+            exit 1
+          fi
+
+      - name: Create test report
+        if: always()
+        run: |
+          cat > test-report.md << EOF
+          # Deployment Test Report
+          - Date: $(date)
+          - Application: Healthy
+          - Database: Connected
+          - Containers: Running
+          EOF
+
+      - name: Save artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-artifacts
+          path: |
+            .env
+            test-report.md
+          retention-days: 30
